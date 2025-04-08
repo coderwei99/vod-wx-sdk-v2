@@ -23,7 +23,7 @@ Page({
   // 2. 如果遇到请求报某个域名不在合法域名列表， 可以参考https://developers.weixin.qq.com/miniprogram/dev/framework/ability/network.html 在小程序开发者平台配置域名请求白名单
   // 3. callback是一个匿名的异步回调，用于向sdk返回一个签名字符串，所以此参数必须存在
   getSignature: function (callback) {
-    wx.request({
+    uni.request({
       url: 'https://demo.vod2.myqcloud.com/ugc-upload/',
       method: 'POST',
       data: {
@@ -39,18 +39,18 @@ Page({
       }
     });
   },
-  inputChange: function(evt) {
+  inputChange: function (evt) {
     this.setData({
       fileName: evt.detail.value
     });
   },
-  chooseVideo: function() {
+  chooseVideo: function () {
     const self = this;
-    wx.chooseMedia({
+    uni.chooseMedia({
       sourceType: ["album", "camera"],
       sizeType: ["original"],
       maxDuration: 60,
-      success: function(res) {
+      success: function (res) {
         console.log(res.tempFiles);
         self.setData({
           videoFile: res.tempFiles[0]
@@ -61,12 +61,12 @@ Page({
   },
   chooseCover() {
     const self = this;
-    wx.chooseMedia({
+    uni.chooseMedia({
       sourceType: ["album", "camera"],
       sizeType: ["original"],
       count: 1,
       mediaType: ["image"],
-      success: function(res) {
+      success: function (res) {
         console.log(res.tempFiles);
         self.setData({
           coverFile: res.tempFiles[0]
@@ -76,7 +76,7 @@ Page({
     });
   },
   startUpload() {
-    wx.showLoading({
+    uni.showLoading({
       title: '处理中',
       mask: true,
     })
@@ -87,32 +87,32 @@ Page({
 
       mediaName: self.data.fileName, //选填，视频名称，强烈推荐填写(如果不填，则默认为“来自小程序”)
       coverFile: self.data.coverFile, // 选填，视频封面
-      error: function(result) {
+      error: function (result) {
         console.log("error");
         console.log(result);
-        wx.hideLoading();
-        wx.showModal({
+        uni.hideLoading();
+        uni.showModal({
           title: "上传失败",
           content: JSON.stringify(result),
           showCancel: false
         });
       },
-      progress: function(result) {
+      progress: function (result) {
         console.log("progress");
         console.log(result);
-        wx.hideLoading();
+        uni.hideLoading();
         self.setData({
           progress: parseInt(result.percent * 100)
-        }) 
-        // wx.showLoading({
+        })
+        // uni.showLoading({
         //   title: "上传中 " + result.percent * 100 + "%"
         // });
       },
-      finish: function(result) {
+      finish: function (result) {
         console.log("finish");
         console.log(result);
-        wx.hideLoading();
-        wx.showModal({
+        uni.hideLoading();
+        uni.showModal({
           title: "上传成功",
           content:
             "fileId:" + result.fileId + "\nvideoName:" + result.videoName,

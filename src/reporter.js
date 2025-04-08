@@ -27,7 +27,7 @@ exports.VodReporter = class {
     version: pkg.version,
     platform: 4000,
     device: (function () {
-      const { brand, model, version } = wx.getSystemInfoSync();
+      const { brand, model, version } = uni.getSystemInfoSync();
       return `${brand}-${model}-wx${version}`;
     })(),
   };
@@ -195,7 +195,7 @@ exports.VodReporter = class {
       return console.log("上报: ", reportData);
     }
     console.log("上报: ", reportData);
-    wx.request({
+    uni.request({
       method: "POST",
       url: this.reportUrl,
       data: reportData,

@@ -1,477 +1,388 @@
-const COS = require("cos-wx-sdk-v5");
+const COS = require("./cos-wx-sdk-v5");
 const vodUtil = require("./vod_util");
 const { UploaderEvent } = require("./constants");
 const { EventEmitter } = require("events");
-const COS_REGION_KEY = "COS_REGION_KEY";
 const { VodReporter, reportEvent } = require("./reporter");
+const baseConfig = require("./config")
 
-function raceRequest(options) {
-  return new Promise((resolve, reject) => {
-    wx.request({
-      method: "HEAD",
-      url: "https://" + options.domain,
-      success: (result) => {
-        resolve(options.region);
-      },
-      fail: (result) => {
-        if (vodUtil.isFunction(self.error)) {
-          self.error(result);
-        }
-      },
-    });
+const COS_REGION_KEY = "COS_REGION_KEY";
+const DEFAULT_COS_STRATEGY = {
+  ChunkParallelLimit: 6,
+  ChunkSize: 1048576 * 8, // 8MB
+};
+
+/**
+ * 执行竞速请求以确定最优区域
+ * @param {Object} options - 请求选项
+ * @returns {Promise<string>} 返回区域标识
+ */
+const raceRequest = (options) => new Promise((resolve) => {
+  uni.request({
+    method: "HEAD",
+    url: `https://${options.domain}`,
+    success: () => resolve(options.region),
+    fail: (error) => console.warn(`Race request failed for ${options.domain}`, error),
   });
-}
+});
 
-function getCosStrategy(params) {
+/**
+ * 获取COS上传策略
+ * @param {Object} params - 配置参数
+ * @returns {Object} COS策略对象
+ */
+const getCosStrategy = (params = {}) => {
+  console.log('getCosStrategy is called');
+
   const sourceData = {
     FileParallelLimit: params.fileParallelLimit,
-    ChunkParallelLimit: params.chunkParallelLimit || 6,
+    ChunkParallelLimit: params.chunkParallelLimit ?? DEFAULT_COS_STRATEGY.ChunkParallelLimit,
     ChunkRetryTimes: params.chunkRetryTimes,
-    ChunkSize: params.chunkSize || 1048576 * 8,
+    ChunkSize: params.chunkSize ?? DEFAULT_COS_STRATEGY.ChunkSize,
     SliceSize: params.sliceSize,
     CopyChunkParallelLimit: params.copyChunkParallelLimit,
     CopyChunkSize: params.copyChunkSize,
     CopySliceSize: params.copySliceSize,
-    ProgressInterval: params.progressInterval
+    ProgressInterval: params.progressInterval,
   };
 
-  const cosStrategy = Object.keys(sourceData)
-    .filter(key => sourceData[key] !== undefined)
-    .reduce((acc, key) => ({ ...acc, [key]: sourceData[key] }), {});
-
-  return cosStrategy;
-}
+  return Object.fromEntries(
+    Object.entries(sourceData).filter(([, value]) => value !== undefined)
+  );
+};
 
 class Uploader extends EventEmitter {
-  retryCommitNum = 3;
-  retryApplyNum = 3;
-  retryPrepareNum = 3;
+  #retryLimits = {
+    commit: 3,
+    apply: 3,
+    prepare: 3,
+  };
 
   constructor(opts) {
     super();
-    const self = this;
-    if (vodUtil.getType(opts) !== "object") {
-      throw new Error("opts must be a object");
-    }
+    if (!vodUtil.isObject(opts)) throw new Error("opts must be an object");
+    console.log('-----------------');
 
-    self.appId = opts.appId || undefined;
-    self.taskId = undefined;
-    self.cos = undefined;
-
-    self.cosStrategy = getCosStrategy(opts);
-
-    let videoFile;
-    if (opts.mediaFile) {
-      // alias
-      videoFile = opts.mediaFile;
-    } else {
-      ({ videoFile } = opts);
-    }
-
-    if (!videoFile) {
-      throw new Error("need `mediaFile` param");
-    }
-    self.fileKey = videoFile.tempFilePath.replace(/^.*?([^/]{32}\.\w+)$/, "$1");
-    if (opts.mediaName) {
-      // alias
-      self.fileName = opts.mediaName;
-    } else {
-      self.fileName = opts.fileName;
-    }
-
-    const { coverFile } = opts;
-    self.videoFileMessage = vodUtil.getFileMessage(videoFile, self.fileName);
-    if (coverFile) {
-      coverFile.tempFilePath = coverFile.tempFilePaths[0];
-      coverFile.size = coverFile.tempFiles[0].size;
-      self.coverFileMessage = vodUtil.getFileMessage(coverFile, self.fileName);
-      self.fileKey = coverFile.tempFilePath.replace(
-        /^.*?([^/]{32}\.\w+)$/,
-        "$1"
-      );
-    }
-    self.reportId = opts.reportId || "";
-    self.getSignature = opts.getSignature;
-    // self.success = opts.success;
-    self.error = opts.error;
-    self.progress = opts.progress;
-    self.finish = opts.finish;
-    if (!self.getSignature) {
-      throw new Error("need `getSignature` param");
-    }
-    if (
-      !vodUtil.isFunction(self.getSignature) ||
-      // !vodUtil.isFunction(self.success) ||
-      !vodUtil.isFunction(self.error) ||
-      !vodUtil.isFunction(self.progress) ||
-      !vodUtil.isFunction(self.finish)
-    ) {
-      throw new Error(
-        "getSignature, error, progress, finish must be a Function."
-      );
-    }
-    // 网络状态变化时重新竞速获取最优 storeRegion
-    // wx.onNetworkStatusChange((res) => {
-    //   if (res.isConnected) {
-    //     this.requestRegion();
-    //   }
-    // });
+    this.#initializeProperties(opts);
+    this.#validateRequiredParams();
+    this.cosStrategy = getCosStrategy(opts);
   }
 
-  setStorage(name, val) {
-    wx.setStorageSync("wp_ugc_" + name, val);
+  #initializeProperties(opts) {
+    this.appId = opts.appId;
+    this.taskId = null;
+    this.cos = null;
+    this.reportId = opts.reportId || "";
+    this.getSignature = opts.getSignature;
+    this.error = opts.error;
+    this.progress = opts.progress;
+    this.finish = opts.finish;
+
+    const videoFile = opts.mediaFile ?? opts.videoFile;
+    if (!videoFile) throw new Error("`mediaFile` param is required");
+
+    this.fileKey = videoFile.tempFilePath.replace(/^.*?([^/]{32}\.\w+)$/, "$1");
+    this.fileName = opts.mediaName ?? opts.fileName;
+    this.videoFileMessage = vodUtil.getFileMessage(videoFile, this.fileName);
+
+    if (opts.coverFile) this.#initCoverFile(opts.coverFile);
+  }
+
+  #initCoverFile(coverFile) {
+    coverFile.tempFilePath = coverFile.tempFilePaths[0];
+    coverFile.size = coverFile.tempFiles[0].size;
+    this.coverFileMessage = vodUtil.getFileMessage(coverFile, this.fileName);
+    this.fileKey = coverFile.tempFilePath.replace(
+      /^.*?([^/]{32}\.\w+)$/,
+      "$1"
+    );
+  }
+
+  #validateRequiredParams() {
+    const requiredFunctions = [
+      [this.getSignature, "getSignature"],
+      [this.error, "error"],
+      [this.progress, "progress"],
+      [this.finish, "finish"],
+    ];
+
+    for (const [fn, name] of requiredFunctions) {
+      if (!vodUtil.isFunction(fn)) {
+        throw new Error(`${name} must be a function`);
+      }
+    }
+  }
+
+  // 存储操作方法
+  setStorage(name, value) {
+    uni.setStorageSync(`wp_ugc_${name}`, value);
   }
 
   getStorage(name) {
-    try {
-      const val = wx.getStorageSync("wp_ugc_" + name);
-      return val;
-    } catch (e) {
-      return "";
-    }
+    return uni.getStorageSync(`wp_ugc_${name}`) || "";
   }
 
   delStorage(name) {
-    wx.removeStorageSync("wp_ugc_" + name);
+    uni.removeStorageSync(`wp_ugc_${name}`);
   }
 
-  regionRace(cosRegionList, cb) {
-    Promise.race(cosRegionList.map((item) => raceRequest(item))).then((res) => {
-      wx.setStorageSync(COS_REGION_KEY, res);
-      // report target region obtain from prepare
-      if (cb) {
-        cb(res);
-      }
+  /**
+   * 区域竞速选择
+   * @param {Array} cosRegionList - 区域列表
+   * @param {Function} callback - 回调函数
+   */
+  async regionRace(cosRegionList, callback) {
+    const region = await Promise.race(cosRegionList.map(raceRequest));
+    uni.setStorageSync(COS_REGION_KEY, region);
+    callback?.(region);
+  }
+
+  async requestRegion(callback) {
+    const signature = await this.#getSignature();
+    const requestStartTime = Date.now();
+
+    uni.request({
+      method: "POST",
+      url: `${baseConfig.tencentCloudUrl}?Action=${baseConfig.PrepareUploadUGC}`,
+      data: { signature },
+      dataType: "json",
+      success: (result) => this.#handlePrepareResponse(result, requestStartTime, callback),
+      fail: (error) => this.error?.(error, 1),
     });
   }
-  requestRegion(callback) {
-    const self = this;
-    self.getSignature((signature) => {
-      self.signature = signature;
-      const sendParams = {
-        signature: signature,
-      };
-      const requestStartTime = Date.now();
-      wx.request({
-        method: "POST",
-        url: "https://vod2.qcloud.com/v3/index.php?Action=PrepareUploadUGC",
-        data: sendParams,
-        dataType: "json",
-        success: (result) => {
-          if (result.data.code === 0) {
-            self.appId = self.appId || result.data.data.appId;
-            self.regionRace(result.data.data.cosRegionList, function (res) {
-              self.emit(reportEvent.report_prepare, {
-                data: {
-                  region: res,
-                },
-                requestStartTime: requestStartTime,
-              });
-              callback(res);
-            });
-          } else {
-            // eslint-disable-next-line no-lonely-if
-            if (self.retryPrepareNum > 0) {
-              self.emit(reportEvent.report_prepare, {
-                err: result.data,
-                requestStartTime: requestStartTime,
-              });
-              self.retryPrepareNum -= 1;
-              self.requestRegion(callback);
-            } else {
-              // eslint-disable-next-line no-lonely-if
-              if (vodUtil.isFunction(self.error)) {
-                self.error(result);
-              }
-            }
-          }
-        },
-        fail: (result) => {
-          if (vodUtil.isFunction(self.error)) {
-            self.error(result);
-          }
-        },
+
+  #getSignature() {
+    return new Promise((resolve) => this.getSignature(resolve));
+  }
+
+  #handlePrepareResponse(result, requestStartTime, callback) {
+    if (result.data.code === 0) {
+      this.appId = this.appId || result.data.data.appId;
+      this.regionRace(result.data.data.cosRegionList, (region) => {
+        this.emit(reportEvent.report_prepare, { data: { region }, requestStartTime });
+        callback(region);
       });
-    });
-  }
-
-  getStoreRegion(callback) {
-    const self = this;
-    try {
-      const region = wx.getStorageSync(COS_REGION_KEY);
-      if (!region) {
-        throw new Error("no storage");
-      }
-      return callback(region);
-    } catch (e) {
-      self.requestRegion(callback);
+    } else if (this.#retryLimits.prepare > 0) {
+      this.#retryLimits.prepare--;
+      this.emit(reportEvent.report_prepare, { err: result.data, requestStartTime });
+      this.requestRegion(callback);
+    } else {
+      this.error?.(result, 2);
     }
   }
 
+  getStoreRegion(callback) {
+    const region = this.getStorage(COS_REGION_KEY);
+    return region ? callback(region) : this.requestRegion(callback);
+  }
+
   start() {
-    const self = this;
-    // self.getStoreRegion((region) => {
-
-    // });
-    self.applyUpload((result) => {
-      self.uploadFile(result, () => {
-        self.commitUpload();
-      });
-    });
-  }
-  cancel() {
-    this.cos.cancelTask(this.taskId);
-  }
-  pause() {
-    this.cos.pauseTask(this.taskId);
-  }
-  restart() {
-    this.cos.restartTask(this.taskId);
-  }
-
-  applyUpload(callback) {
-    const self = this;
-    self.getSignature((signature) => {
-      self.signature = signature;
-      const sessionKey = self.getStorage(self.fileKey);
-      let sendParams;
-      if (sessionKey) {
-        sendParams = {
-          signature: signature,
-          vodSessionKey: sessionKey,
-        };
-      } else {
-        sendParams = {
-          signature: signature,
-          videoName: self.videoFileMessage.name,
-          videoType: self.videoFileMessage.type,
-          // videoSize: self.videoFileMessage.size,
-        };
-      }
-      if (self.coverFileMessage) {
-        // upload video together with cover
-        sendParams.coverName = self.coverFileMessage.name;
-        sendParams.coverType = self.coverFileMessage.type;
-        // sendParams.coverSize = self.coverFileMessage.size;
-      }
-      const requestStartTime = Date.now();
-      wx.request({
-        method: "POST",
-        url: "https://vod2.qcloud.com/v3/index.php?Action=ApplyUploadUGC",
-        data: sendParams,
-        dataType: "json",
-        success: (result) => {
-          if (result.data.code === 0) {
-            self.appId = self.appId || result.data.data.appId;
-            self.emit(reportEvent.report_apply, {
-              data: sendParams,
-              requestStartTime: requestStartTime,
-            });
-            self.vodSessionKey = result.data.data.vodSessionKey;
-            self.setStorage(self.fileKey, self.vodSessionKey);
-            callback(result);
-          } else {
-            // eslint-disable-next-line no-lonely-if
-            if (self.retryApplyNum > 0) {
-              self.emit(reportEvent.report_apply, {
-                err: result.data,
-                requestStartTime: requestStartTime,
-              });
-              self.retryApplyNum -= 1;
-              self.applyUpload(callback);
-            } else {
-              // eslint-disable-next-line no-lonely-if
-              if (vodUtil.isFunction(self.error)) {
-                self.error(result);
-              }
-            }
-          }
-        },
-        fail: (result) => {
-          if (vodUtil.isFunction(self.error)) {
-            self.error(result);
-          }
-        },
-      });
+    console.log("Uploader starting...");
+    this.applyUpload((result) => {
+      this.uploadFile(result, () => this.commitUpload());
     });
   }
 
-  uploadFile(result, cb) {
-    const self = this;
+  cancel() { this.cos?.cancelTask(this.taskId); }
+  pause() { this.cos?.pauseTask(this.taskId); }
+  restart() { this.cos?.restartTask(this.taskId); }
 
-    const applyData = result.data.data;
-    const cos = new COS(Object.assign({
-      getAuthorization: (options, callback) => {
-        callback({
-          TmpSecretId: applyData.tempCertificate.secretId,
-          TmpSecretKey: applyData.tempCertificate.secretKey,
-          XCosSecurityToken: applyData.tempCertificate.token,
-          StartTime: applyData.timestamp,
-          ExpiredTime: applyData.tempCertificate.expiredTime,
-        });
+  async applyUpload(callback) {
+    const signature = await this.#getSignature();
+    this.signature = signature;
+    const sessionKey = this.getStorage(this.fileKey);
+    const sendParams = this.#buildApplyParams(signature, sessionKey);
+    const requestStartTime = Date.now();
+
+    uni.request({
+      method: "POST",
+      url: `${baseConfig.tencentCloudUrl}?Action=${baseConfig.ApplyUploadUGC}`,
+      data: sendParams,
+      dataType: "json",
+      success: (result) => this.#handleApplyResponse(result, sendParams, requestStartTime, callback),
+      fail: (error) => {
+        console.log('111111111111111111111111111111');
+
+        this.error?.(error, 3)
       },
-    }, self.cosStrategy));
-    cos.on("before-send", function (opt) {
-      var url = opt.url;
-      var u = url.match(/^(https?:\/\/([^\/]+)\/)([^\/]*\/?)(.*)$/);
-      opt.url = url.replace(u[2], "vod2.qcloud.com");
-      opt.headers["Vod-Forward-Cos"] = u[2];
     });
-    this.cos = cos;
-    const cosCommonParam = {
+  }
+
+  #buildApplyParams(signature, sessionKey) {
+    const baseParams = sessionKey
+      ? { signature, vodSessionKey: sessionKey }
+      : {
+        signature,
+        videoName: this.videoFileMessage.name,
+        videoType: this.videoFileMessage.type,
+      };
+
+    return this.coverFileMessage
+      ? {
+        ...baseParams,
+        coverName: this.coverFileMessage.name,
+        coverType: this.coverFileMessage.type,
+      }
+      : baseParams;
+  }
+
+  #handleApplyResponse(result, sendParams, requestStartTime, callback) {
+    if (result.data.code === 0) {
+      this.appId = this.appId || result.data.data.appId;
+      this.vodSessionKey = result.data.data.vodSessionKey;
+      this.setStorage(this.fileKey, this.vodSessionKey);
+      this.emit(reportEvent.report_apply, { data: sendParams, requestStartTime });
+      callback(result);
+    } else if (this.#retryLimits.apply > 0) {
+      this.#retryLimits.apply--;
+      this.emit(reportEvent.report_apply, { err: result.data, requestStartTime });
+      this.applyUpload(callback);
+    } else {
+      this.error?.(result, 4);
+    }
+  }
+
+  async uploadFile(result, callback) {
+    const applyData = result.data.data;
+    this.cos = this.#createCosInstance(applyData);
+
+    const uploadParams = this.#buildUploadParams(applyData);
+    await Promise.all(uploadParams.map((param) => this.#uploadSingleFile(param)));
+    console.log("All uploads completed");
+    callback();
+  }
+
+  #createCosInstance(applyData) {
+    const cos = new COS({
+      ...this.cosStrategy,
+      getAuthorization: (_, cb) => cb({
+        TmpSecretId: applyData.tempCertificate.secretId,
+        TmpSecretKey: applyData.tempCertificate.secretKey,
+        XCosSecurityToken: applyData.tempCertificate.token,
+        StartTime: applyData.timestamp,
+        ExpiredTime: applyData.tempCertificate.expiredTime,
+      }),
+    });
+
+    cos.on("before-send", (opt) => {
+      try {
+        const [, , domain, path] = opt.url.match(/^(https?:\/\/([^\/]+)\/)([^\/]*\/?)(.*)$/);
+        opt.url = opt.url.replace(domain, "vod2.qcloud.com");
+        opt.headers["Vod-Forward-Cos"] = domain;
+      } catch (error) {
+        console.log('error', error);
+      }
+    });
+
+    return cos;
+  }
+
+  #buildUploadParams(applyData) {
+    const commonParam = {
       bucket: `${applyData.storageBucket}-${applyData.storageAppId}`,
       region: applyData.storageRegionV5,
     };
 
-    const uploadCosParams = [];
-
+    const params = [];
     if (this.videoFileMessage) {
-      const cosVideoParam = {
-        ...cosCommonParam,
+      params.push({
+        ...commonParam,
         filePath: this.videoFileMessage.tempFilePath,
         fileSize: this.videoFileMessage.size,
         key: applyData.video.storagePath,
-        onProgress: (info) => {
-          if (vodUtil.isFunction(self.progress)) {
-            self.progress(info);
-          }
-        },
-        // onProgress: function onProgress(data) {
-        //   self.emit(UploaderEvent.video_progress, data);
-        //   self.emit(UploaderEvent.media_progress, data);
-        // },
-        onTaskReady: function (taskId) {
-          self.taskId = taskId;
-        },
-      };
-      uploadCosParams.push(cosVideoParam);
+        onProgress: (info) => this.progress?.(info),
+        onTaskReady: (taskId) => (this.taskId = taskId),
+      });
     }
 
     if (this.coverFileMessage) {
-      const cosCoverParam = {
-        ...cosCommonParam,
-        fileSize: this.coverFileMessage.size,
+      params.push({
+        ...commonParam,
         filePath: this.coverFileMessage.tempFilePath,
+        fileSize: this.coverFileMessage.size,
         key: applyData.cover.storagePath,
         onTaskReady: vodUtil.noop,
         onProgress: vodUtil.noop,
-        // cover don't need progress
-        // onProgress: function onProgress(data) {
-        //   self.emit(UploaderEvent.cover_progress, data);
-        // }
-      };
-      uploadCosParams.push(cosCoverParam);
+      });
     }
 
-    const uploadPromises = uploadCosParams.map((uploadCosParam) => {
-      return new Promise(function (resolve, reject) {
-        const requestStartTime = Date.now();
-        cos.sliceUploadFile(
-          // cos.postObject(
-          {
-            Bucket: uploadCosParam.bucket,
-            Region: uploadCosParam.region,
-            Key: uploadCosParam.key,
-            FilePath: uploadCosParam.filePath,
-            FileSize: uploadCosParam.fileSize,
-            onProgress: uploadCosParam.onProgress,
-            onTaskReady: uploadCosParam.onTaskReady,
-          },
-          (err, data) => {
-            if (err) {
-              // when fails
-              if (
-                uploadCosParam.filePath === self.videoFileMessage.tempFilePath
-              ) {
-                self.emit(reportEvent.report_cos_upload, {
-                  err: err,
-                  requestStartTime: requestStartTime,
-                });
-              }
-              if (vodUtil.isFunction(self.error)) {
-                const { error } = err;
-                const errObj =
-                  error && error.Code
-                    ? {
-                        code: error.Code,
-                        message: error.Message || error.message,
-                        reqid: error.RequestId || undefined,
-                      }
-                    : {
-                        code: err.statusCode || -2,
-                        message: "cos error",
-                      };
-                self.error(errObj);
-              }
-              reject();
-              return;
-            }
-            // when succeeds
-            // if (vodUtil.isFunction(self.success)) {
-            //   self.success(data);
-            // }
-            resolve();
-          }
-        );
-      });
-    });
+    return params;
+  }
 
-    Promise.all(uploadPromises).then(function () {
-      cb();
+  #uploadSingleFile(param) {
+    return new Promise((resolve, reject) => {
+      const requestStartTime = Date.now();
+      this.cos.sliceUploadFile(
+        {
+          Bucket: param.bucket,
+          Region: param.region,
+          Key: param.key,
+          FilePath: param.filePath,
+          FileSize: param.fileSize,
+          onProgress: param.onProgress,
+          onTaskReady: param.onTaskReady,
+        },
+        (err, data) => {
+          if (err) {
+            this.#handleUploadError(err, param, requestStartTime);
+            reject(err);
+          } else {
+            resolve(data);
+          }
+        }
+      );
     });
   }
 
-  commitUpload() {
-    const self = this;
+  #handleUploadError(err, param, requestStartTime) {
+    if (param.filePath === this.videoFileMessage.tempFilePath) {
+      this.emit(reportEvent.report_cos_upload, { err, requestStartTime });
+    }
 
-    const sendParam = {
-      signature: this.signature,
-      vodSessionKey: this.vodSessionKey,
-    };
+    const errorObj = err.error?.Code
+      ? {
+        code: err.error.Code,
+        message: err.error.Message || err.error.message,
+        reqid: err.error.RequestId,
+      }
+      : { code: err.statusCode || -2, message: "cos error" };
+
+    this.error?.(errorObj, 5);
+  }
+
+  async commitUpload() {
+    const sendParam = { signature: this.signature, vodSessionKey: this.vodSessionKey };
     const requestStartTime = Date.now();
-    wx.request({
+
+    uni.request({
       method: "POST",
-      url: "https://vod2.qcloud.com/v3/index.php?Action=CommitUploadUGC",
+      url: `${baseConfig.tencentCloudUrl}?Action=${baseConfig.CommitUploadUGC}`,
       data: sendParam,
       dataType: "json",
-      success: (result) => {
-        if (result.data.code === 0) {
-          self.emit(reportEvent.report_commit, {
-            data: result.data.data,
-            requestStartTime: requestStartTime,
-          });
-          const res = result.data.data;
-          if (vodUtil.isFunction(self.finish)) {
-            self.finish({
-              fileId: res.fileId,
-              videoName: self.videoFileMessage.name,
-              videoUrl: res.video && res.video.url,
-              coverUrl: res.cover && res.cover.url,
-            });
-          }
-          self.delStorage(self.fileKey);
-        } else {
-          // eslint-disable-next-line no-lonely-if
-          self.emit(reportEvent.report_commit, {
-            err: result.data,
-            requestStartTime: requestStartTime,
-          });
-          if (self.retryCommitNum > 0) {
-            self.retryCommitNum -= 1;
-            self.commitUpload();
-          } else {
-            // eslint-disable-next-line no-lonely-if
-            if (vodUtil.isFunction(self.error)) {
-              self.error(result);
-            }
-          }
-        }
-      },
-      fail: (result) => {
-        if (vodUtil.isFunction(self.error)) {
-          self.error(result);
-        }
-      },
+      success: (result) => this.#handleCommitResponse(result, requestStartTime),
+      fail: (error) => this.error?.(error, 6),
+    });
+  }
+
+  #handleCommitResponse(result, requestStartTime) {
+    if (result.data.code === 0) {
+      this.emit(reportEvent.report_commit, { data: result.data.data, requestStartTime });
+      this.#finishUpload(result.data.data);
+      this.delStorage(this.fileKey);
+    } else if (this.#retryLimits.commit > 0) {
+      this.#retryLimits.commit--;
+      this.emit(reportEvent.report_commit, { err: result.data, requestStartTime });
+      this.commitUpload();
+    } else {
+      this.error?.(result, 7);
+    }
+  }
+
+  #finishUpload(data) {
+    this.finish?.({
+      fileId: data.fileId,
+      videoName: this.videoFileMessage.name,
+      videoUrl: data.video?.url,
+      coverUrl: data.cover?.url,
     });
   }
 }
@@ -484,14 +395,8 @@ module.exports = {
       uploader.start();
       return uploader;
     } catch (e) {
-      if (vodUtil.isFunction(params.error)) {
-        params.error({
-          code: -1,
-          message: e.message,
-        });
-      } else {
-        throw e;
-      }
+      console.error("Uploader initialization failed:", e);
+      params.error?.({ code: -1, message: e.message });
     }
   },
 };
