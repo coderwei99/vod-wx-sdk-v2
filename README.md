@@ -1,4 +1,4 @@
-# vod-wx-sdk-v2
+# vod-uni-sdk-v2
 
 <div align="center">
 
@@ -16,11 +16,11 @@ npm install
 npm run build
 ```
 
-Place the packaged output (/dist/vod-wx-sdk-v2.js) into the current project and import it to use.
+Place the packaged output (/dist/vod-uni-sdk-v2.js) into the current project and import it to use.
 
 ````js
 // At the places in your project where it needs to be used.
-const TcVod = require("@/dist/vod-wx-sdk-v2.js");
+const TcVod = require("@/dist/vod-uni-sdk-v2.js");
 
 TcVod.start({
   mediaFile: mediaFile,

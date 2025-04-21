@@ -1,8 +1,8 @@
 {
-  "name": "vod-wx-sdk-v2",
-  "version": "1.0.3",
+  "name": "vod-uni-sdk-v2",
+  "version": "1.0.4",
   "description": "Tencent cloud vod sdk for wechat mini program",
-  "main": "dist/vod-wx-sdk-v2.js",
+  "main": "dist/vod-uni-sdk-v2.js",
   "miniprogram": "dist",
   "scripts": {
     "build": "webpack --config webpack.config.js",
@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tencentyun/vod-wx-sdk-v2.git"
+    "url": "git+https://github.com/tencentyun/vod-uni-sdk-v2.git"
   },
   "keywords": [
     "vod",
@@ -24,9 +24,9 @@
   ],
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/tencentyun/vod-wx-sdk-v2/issues"
+    "url": "https://github.com/tencentyun/vod-uni-sdk-v2/issues"
   },
-  "homepage": "https://github.com/tencentyun/vod-wx-sdk-v2#readme",
+  "homepage": "https://github.com/tencentyun/vod-uni-sdk-v2#readme",
   "devDependencies": {
     "@babel/core": "^7.12.10",
     "@babel/plugin-proposal-class-properties": "^7.12.1",

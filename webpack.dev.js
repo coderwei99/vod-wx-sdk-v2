@@ -5,7 +5,7 @@ const path = require("path");
 module.exports = {
   ...config,
   output: {
-    filename: "vod-wx-sdk-v2.js",
+    filename: "vod-uni-sdk-v2.js",
     path: path.resolve(__dirname, "demo/lib"),
     libraryTarget: "commonjs",
   },

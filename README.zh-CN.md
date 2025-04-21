@@ -1,4 +1,4 @@
-# vod-wx-sdk-v2
+# vod-uni-sdk-v2
 
 <div align="center">
 
@@ -16,11 +16,11 @@ npm install
 npm run build
 ```
 
-将打包后的输出文件（/dist/vod-wx-sdk-v2.js）放入当前项目中，并导入使用。
+将打包后的输出文件（/dist/vod-uni-sdk-v2.js）放入当前项目中，并导入使用。
 
 ````js
 // 在项目中需要使用的地方
-const TcVod = require("@/dist/vod-wx-sdk-v2.js");
+const TcVod = require("@/dist/vod-uni-sdk-v2.js");
 
 TcVod.start({
   mediaFile: mediaFile,

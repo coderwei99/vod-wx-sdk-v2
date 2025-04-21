@@ -4,7 +4,7 @@ module.exports = {
   mode: "production",
   entry: "./src/vod.js",
   output: {
-    filename: "vod-wx-sdk-v2.js",
+    filename: "vod-uni-sdk-v2.js",
     path: path.resolve(__dirname, "dist"),
     libraryTarget: "commonjs",
   },

@@ -1,4 +1,4 @@
-const VodUploader = require("../../lib/vod-wx-sdk-v2.js");
+const VodUploader = require("../../lib/vod-uni-sdk-v2.js");
 
 const app = getApp();
 
